@@ -14,7 +14,7 @@ Risuai is now over three years old, and it's still good at its job; however, as 
 
 There were also many instances where I thought it would have been better to go in a certain direction, such as managing prompt presets and toggles pre-chat instance, handling everything as modules, improving the GUI design, and adding agents.
 
-Risuai-Next will solve these issues by being built from scratch.
+Risuai-Next will solve these issues because it is being built from scratch. It was originally planned as separate apps, such as Risuai-Lite or Risuai-Power, but I chose to make it one program.
 
 ## What will happen to Risuai?
 
