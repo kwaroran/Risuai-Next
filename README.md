@@ -1,4 +1,4 @@
-# RisuaiNext
+# Risuai-Next
 
 AI roleplaying application, but better
 
