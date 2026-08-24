@@ -1,42 +1,25 @@
-# sv
+# RisuaiNext
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+AI roleplaying application, but better
 
-## Creating a project
+## What is Risuai-Next?
 
-If you're seeing this, you've probably already done this step. Congrats!
+Risuai-Next is a highly customizable, open-source, specialized role-playing AI application that uses your API key.
 
-```sh
-# create a new project
-npx sv create my-app
-```
+Unlike the original Risuai, which was made before modern LLM workflows existed, the goal of Risuai-Next is to create an application that suits modern LLM workflows.
 
-To recreate this project with the same configuration:
+## Why?
 
-```sh
-# recreate this project
-pnpm dlx sv@1.0.0-next.5 create --template minimal --types ts --add prettier vitest="usages:unit,component" tailwindcss="plugins:typography,forms" sveltekit-adapter="adapter:auto" drizzle="database:d1" paraglide="languageTags:en, ko+demo:no" ai-tools="ide:vscode,claude-code+delivery:plugin+tools:mcp,svelte-code-writer,svelte-core-bestpractices,svelte-file-editor+mcpSetup:remote" --install pnpm ./
-```
+Risuai is now over three years old, and it's still good at its job; however, as time has passed, bottlenecks have grown: a one-state base approach that was only suitable when the app was small, token management that isn't suitable now, tool calls that were monkey-patched, and lots of now useless features that make the app heavy.
 
-## Developing
+There were also many instances where I thought it would have been better to go in a certain direction, such as managing prompt presets and toggles pre-chat instance, handling everything as modules, improving the GUI design, and adding agents.
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+Risuai-Next will solve these issues by being built from scratch.
 
-```sh
-npm run dev
+## What will happen to Risuai?
 
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
+Nothing. Risuai will continue as is. Risuai-Next will be a separate app that runs separately. The reason the name "Risuai-Next" was chosen is simply because I couldn't find a better name; it is not intended to replace Risuai. I will probably change the name before releasing it.
 
-## Building
+## Why are PRs and issues closed?
 
-To create a production version of your app:
-
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+I want to focus on the program myself in the early stages. It will be opened when it's ready.
