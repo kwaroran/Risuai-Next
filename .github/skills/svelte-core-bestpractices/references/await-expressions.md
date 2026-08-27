@@ -37,8 +37,8 @@ When an `await` expression depends on a particular piece of state, changes to th
 	}
 </script>
 
-<input type="number" bind:value={a}>
-<input type="number" bind:value={b}>
+<input type="number" bind:value={a} />
+<input type="number" bind:value={b} />
 
 <p>{a} + {b} = {await add(a, b)}</p>
 ```
@@ -60,8 +60,7 @@ Updates can overlap — a fast update will be reflected in the UI while an earli
 Svelte will do as much asynchronous work as it can in parallel. For example if you have two `await` expressions in your markup...
 
 ```svelte
-<p>{await one(x)}</p>
-<p>{await two(y)}</p>
+<p>{await one(x)}</p><p>{await two(y)}</p>
 ```
 
 ...both functions will run at the same time, as they are independent expressions, even though they are _visually_ sequential.
@@ -168,13 +167,13 @@ The [`fork(...)`](https://svelte.dev/docs/svelte/svelte/llms.txt#fork) API, adde
 		// in case `pending` didn't exist
 		// (if it did, this is a no-op)
 		open = true;
-	}}
->open menu</button>
+	}}>open menu</button
+>
 
 {#if open}
 	<!-- any async work inside this component will start
 	     as soon as the fork is created -->
-	<Menu onclose={() => open = false} />
+	<Menu onclose={() => (open = false)} />
 {/if}
 ```
 
