@@ -1,4 +1,7 @@
-import { id, text, int, boolean, json, timestamp, table, index } from './columns';
+//Relative import (not the `$lib` alias) - schema.ts is also loaded directly by drizzle-kit,
+//which doesn't resolve SvelteKit's path aliases.
+import type { MessageContentBlock } from '../../message';
+import { id, text, int, boolean, json, timestamp, table, index, type AnyColumn } from './columns';
 
 export const accounts = table('accounts', {
 	//id used in everywhere
@@ -18,6 +21,39 @@ export const accounts = table('accounts', {
 	//Display name
 	name: text('name')
 });
+
+export const files = table(
+	'files',
+	{
+		//id, referenced from message content blocks (see MessageContentBlock's `fileId`) - not a
+		//DB-level foreign key there since it's nested inside a JSON column
+		id: id(),
+
+		//owner user
+		owner: text('owner')
+			.notNull()
+			.references(() => accounts.id, { onDelete: 'cascade' }),
+
+		//original filename, as uploaded
+		filename: text('filename').notNull(),
+
+		//MIME type, as uploaded/detected
+		mimeType: text('mimeType').notNull(),
+
+		//size in bytes
+		size: int('size').notNull(),
+
+		//opaque pointer into wherever the actual bytes live (local path, S3/R2 key, etc.) -
+		//interpretation is up to the storage layer, not this schema
+		storageKey: text('storageKey').notNull(),
+
+		//creation time
+		createdAt: timestamp('created_at')
+			.notNull()
+			.$defaultFn(() => new Date())
+	},
+	(table) => [index('files_owner_idx').on(table.owner)]
+);
 
 export const chatSessions = table(
 	'chatSessions',
@@ -75,11 +111,13 @@ export const messages = table(
 		//speaker, also known as senders module ID. null means the message was sent by the account owner (the human user), not a module
 		speakerId: text('speakerId').references(() => modules.id, { onDelete: 'set null' }),
 
-		//active message content
-		message: text('message').notNull(),
-
-		//alternate generations for this turn (swipes), not including the currently active `message`
-		swipes: json<string[]>('swipes').notNull().default([]),
+		//the currently active generation for this turn. Every generation (including the first, and
+		//every "swipe"/regenerate afterwards) is its own row in messageVariants - this just points
+		//at whichever one is currently shown. Null only for the brief window between creating the
+		//message row and creating its first variant; set once and required from then on
+		activeVariantId: text('activeVariantId').references((): AnyColumn => messageVariants.id, {
+			onDelete: 'set null'
+		}),
 
 		//metadata
 		meta: json<unknown>('meta').notNull(),
@@ -95,9 +133,6 @@ export const messages = table(
 			.notNull()
 			.$defaultFn(() => new Date()),
 
-		//last edited time, null if never edited since creation
-		updatedAt: timestamp('updatedAt'),
-
 		//position in the session, fractional indexing
 		position: text('position').notNull()
 	},
@@ -105,6 +140,45 @@ export const messages = table(
 		index('messages_chatSessionId_position_idx').on(table.chatSessionId, table.position),
 		index('messages_owner_idx').on(table.owner)
 	]
+);
+
+export const messageVariants = table(
+	'messageVariants',
+	{
+		//id
+		id: id(),
+
+		//parent message (turn) this is a generation of
+		messageId: text('messageId')
+			.notNull()
+			.references(() => messages.id, { onDelete: 'cascade' }),
+
+		//ordered content blocks for this generation - plain text, model reasoning ("thoughts"),
+		//agentic tool calls/results, and embedded files all interleave in one array. See
+		//MessageContentBlock in src/lib/message.ts. Deliberately NOT stored on `messages` itself:
+		//every swipe/regenerate creates a new row here instead of growing an array on the message,
+		//since unbounded per-message swipe arrays were a real problem in the original RisuAI
+		content: json<MessageContentBlock[]>('content').notNull().default([]),
+
+		//which model generated this variant. Null for a human-authored variant (this message's
+		//speakerId is null). Recorded per-variant rather than trusting chatSessions.linkedModel,
+		//since swipes/regenerates can each use a different model - and since some
+		//MessageContentBlock fields (ThoughtBlock's `ref`/`hash`) are only valid replayed back to
+		//the exact model/provider that produced them, so callers need to know that before reusing
+		//them in a later request
+		model: text('model'),
+
+		//creation time - also the natural ordering for "which swipe came after which", since
+		//variants are only ever appended, never reordered
+		createdAt: timestamp('created_at')
+			.notNull()
+			.$defaultFn(() => new Date()),
+
+		//last edited time, null if never edited since creation (a user can edit a swipe's content
+		//after the fact, same as the old single-message edit)
+		updatedAt: timestamp('updatedAt')
+	},
+	(table) => [index('messageVariants_messageId_idx').on(table.messageId, table.createdAt)]
 );
 
 export const modules = table(

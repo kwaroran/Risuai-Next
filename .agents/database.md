@@ -14,9 +14,12 @@ branching in application code, callers just do `const db = await getDb(); db.sel
   request context.
 - `src/lib/server/db/columns.ts` — dialect-agnostic column/table helpers (see below) that
   `schema.ts` is built from.
-- `src/lib/server/db/schema.ts` — the actual tables (`accounts`, `chatSessions`, `messages`,
-  `modules`, `regexscripts`). Written once, using the helpers from `columns.ts` — never imports
-  `drizzle-orm/pg-core` or `drizzle-orm/sqlite-core` directly.
+- `src/lib/server/db/schema.ts` — the actual tables (`accounts`, `files`, `chatSessions`,
+  `messages`, `messageVariants`, `modules`, `regexscripts`). Written once, using the helpers from
+  `columns.ts` — never imports `drizzle-orm/pg-core` or `drizzle-orm/sqlite-core` directly.
+- `src/lib/message.ts` — `MessageContentBlock`, the shape stored in `messageVariants.content` (see
+  below). Lives outside `server/` (isomorphic, no server-only imports) since the chat UI needs the
+  same type to render messages.
 - `src/lib/server/db/index.ts` — `getDb(cenv?)`, which lazily connects using whichever driver
   `DATABASE_MODE` resolved to and caches the connection in module state (`realDb`). `cenv` is only
   used for `CLOUDFLARE` mode, to pass through the Cloudflare Workers `env` binding when available
@@ -78,20 +81,68 @@ Practical effect of each helper's dialect mapping:
 sqlite builder (this is what gives the exported helper its borrowed type), then the exported
 function branches on `isPg` and casts the pg branch to `ReturnType<typeof xBase>`.
 
+`columns.ts` also exports `AnyColumn`, a type-only escape hatch for circular `.references()`
+thunks — see `messages.activeVariantId` in `schema.ts` for the pattern (two tables whose columns
+reference each other's `id` would otherwise make both tables' inferred types collapse to `any`).
+
 ## Schema (`schema.ts`)
 
 - `accounts` — one row per user. `accountType` is a small numeric enum (see comments in
   `schema.ts` for the current meanings) rather than a real enum column, since those differ across
   dialects too.
+- `files` — owned by an `accounts` row. Metadata only (`filename`, `mimeType`, `size`,
+  `storageKey`) — `storageKey` is an opaque pointer into wherever the actual bytes live (local
+  path, S3/R2 key, etc.); this schema doesn't care which. Referenced by id from `file` content
+  blocks (see `MessageContentBlock` below) — not a DB-level foreign key from there, since that
+  reference lives inside a JSON column.
 - `chatSessions` — owned by an `accounts` row (`onDelete: 'cascade'`). `enabledModules`/`chatVars`
   are JSON arrays, `toggles` is a JSON string→boolean map.
-- `messages` — belongs to a `chatSessions` row. `swipes` holds alternate generations for the turn
-  _excluding_ the currently active `message`. `position` is a fractional-indexing string (not an
-  integer ordinal) so messages can be reordered/inserted without renumbering siblings — same
-  pattern used by `regexscripts.position`.
-- `modules` — owned by an `accounts` row; `icon` stores an image id, not the image itself.
+- `messages` — one row per turn, belongs to a `chatSessions` row. Holds no content itself anymore
+  — `activeVariantId` points at whichever `messageVariants` row is currently shown. `position` is
+  a fractional-indexing string (not an integer ordinal) so messages can be reordered/inserted
+  without renumbering siblings — same pattern used by `regexscripts.position`.
+- `messageVariants` — one row per generation of a message (the first generation and every
+  "swipe"/regenerate afterwards each get their own row), belongs to a `messages` row
+  (`onDelete: 'cascade'`). `content` is an ordered `MessageContentBlock[]` (`src/lib/message.ts`):
+  plain text, model reasoning (`thought`), agentic `toolCall`/`toolResult` pairs, and `file`
+  blocks all interleave freely in that one array, since a single turn can mix all of them (e.g.
+  thought → toolCall → toolResult → text). Ordered by `createdAt` — variants are only ever
+  appended, never reordered, so no separate `position` field is needed. `model` records which
+  model generated the variant (null for a human-authored one) — kept per-variant rather than
+  trusted from `chatSessions.linkedModel`, since swipes can each use a different model and some
+  `ThoughtBlock` fields (`ref`/`hash`) are only valid replayed back to the exact model that
+  produced them. **Swipes were deliberately
+  pulled out into their own table instead of an array column on `messages`**: unbounded
+  per-message swipe arrays were a real problem in the original RisuAI (users could accumulate
+  huge arrays on a single row) — see `messageVariants_messageId_idx`. `messages` and
+  `messageVariants` reference each other's `id` (`activeVariantId` / `messageId`); see the
+  `AnyColumn` note above for how that circular reference is typed.
+- `modules` — owned by an `accounts` row; `icon` stores an image id, not the image itself (could
+  migrate to referencing `files` later, but isn't wired up as a foreign key today).
 - `regexscripts` — belongs to a `modules` row. `targetType` is a small numeric enum (see comments
   in `schema.ts`).
+
+## `MessageContentBlock` (`src/lib/message.ts`)
+
+Discriminated union on `type`, stored as the JSON array `messageVariants.content`:
+
+- `text` — `{ type: 'text'; text }`.
+- `thought` — `{ type: 'thought'; text?; summary?; ref?; hash?; redacted? }`. Providers don't agree
+  on what they expose for reasoning: `text` (full chain of thought), `summary` (condensed - some
+  providers, e.g. OpenAI's reasoning models, only ever give this), `ref` (opaque id to reference
+  this reasoning item in a later call), and `hash` (opaque signature that must be replayed back
+  byte-for-byte to prove the block wasn't tampered with, e.g. Anthropic's thinking signature) are
+  all optional and independent. `redacted` is true when the reasoning content itself was withheld
+  (e.g. Anthropic's redacted thinking blocks).
+- `toolCall` — `{ type: 'toolCall'; id; name; args }`. `id` is matched against a later
+  `toolResult.toolCallId` — possibly on a different message, since a call and its result can land
+  on separate turns.
+- `toolResult` — `{ type: 'toolResult'; toolCallId; result; isError? }`.
+- `file` — `{ type: 'file'; fileId; name?; mimeType? }`. `fileId` references `files.id`.
+
+**Adding a block type**: add the interface and union member in `message.ts`. No schema migration
+needed — `content` is a single JSON column, so new block shapes don't require a DB change, only
+consumers (evaluator/renderer) that need to understand them.
 
 ## Known gaps / next steps
 
@@ -104,3 +155,10 @@ function branches on `isPg` and casts the pg branch to `ReturnType<typeof xBase>
   hasn't been exercised against a real Cloudflare account yet.
 - No migrations are checked into the repo yet (`drizzle/` is untracked/empty) — run
   `pnpm db:generate` before the first `db:push` once real tables are needed somewhere.
+- Creating a message is necessarily two steps (insert the `messages` row, then insert its first
+  `messageVariants` row and update `activeVariantId`) since the two tables reference each other.
+  `messages.activeVariantId` is nullable specifically for the brief window between those two
+  inserts — no code should treat a message with a null `activeVariantId` as a normal, finished
+  state outside of that window.
+- No file-upload/storage layer exists yet — the `files` table only models metadata; nothing writes
+  to it or interprets `storageKey` yet.

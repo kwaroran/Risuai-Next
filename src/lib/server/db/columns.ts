@@ -11,6 +11,11 @@ import { isPg } from './dialect';
 export const table = (isPg ? pg.pgTable : sqlite.sqliteTable) as typeof sqlite.sqliteTable;
 export const index = (isPg ? pg.index : sqlite.index) as typeof sqlite.index;
 
+//Type-only escape hatch for circular `.references()` thunks (e.g. two tables that reference each
+//other's `id`). Annotate the thunk's return type with this - `(): AnyColumn => otherTable.col` -
+//to break the TS inference cycle that would otherwise make both tables implicitly `any`.
+export type AnyColumn = sqlite.AnySQLiteColumn;
+
 //id(): UUID text primary key, generated app-side
 function idBase(name: string) {
 	return sqlite
