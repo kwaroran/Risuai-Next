@@ -28,6 +28,7 @@
 		"@tailwindcss/typography": "^0.5.19",
 		"@tailwindcss/vite": "^4.3.0",
 		"@types/node": "^22",
+		"@types/pg": "^8.23.1",
 		"@vitest/browser-playwright": "^4.1.8",
 		"drizzle-kit": "^0.31.10",
 		"drizzle-orm": "^0.45.2",
@@ -48,6 +49,9 @@
 		"#lib/*": "./src/lib/*"
 	},
 	"dependencies": {
+		"@neondatabase/serverless": "^1.1.0",
+		"pg": "^8.23.0",
+		"postgres": "^3.4.9",
 		"zod": "^4.4.3"
 	}
 }

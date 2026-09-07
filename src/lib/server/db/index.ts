@@ -2,21 +2,31 @@ import type { SqliteRemoteDatabase } from 'drizzle-orm/sqlite-proxy';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import type { BunSQLDatabase } from 'drizzle-orm/bun-sql';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import type { LibSQLDatabase } from 'drizzle-orm/libsql';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import type { NeonHttpDatabase } from 'drizzle-orm/neon-http';
 
 import * as schema from './schema';
+import { databaseMode } from './dialect';
 import {
-	DATABASE_MODE,
 	DATABASE_URL,
 	CLOUDFLARE_API_TOKEN,
 	CLOUDFLARE_DATABASE_ID,
 	CLOUDFLARE_ACCOUNT_ID
 } from '$app/env/private';
 
+//Every branch is constructed with `{ schema }` so `db.query.<table>` (the relational API) is
+//available everywhere, on top of the dialect-agnostic `db.select()/.insert()/...` builder.
 type Dbtype =
 	| SqliteRemoteDatabase<typeof schema>
 	| BetterSQLite3Database<typeof schema>
 	| DrizzleD1Database<typeof schema>
-	| BunSQLDatabase<typeof schema>;
+	| BunSQLDatabase<typeof schema>
+	| LibSQLDatabase<typeof schema>
+	| NodePgDatabase<typeof schema>
+	| PostgresJsDatabase<typeof schema>
+	| NeonHttpDatabase<typeof schema>;
 
 let realDb: Dbtype;
 
@@ -25,19 +35,22 @@ export const getDb = async (cenv?: any | undefined | null): Promise<Dbtype> => {
 		return realDb;
 	}
 
-	switch (DATABASE_MODE) {
+	switch (databaseMode) {
 		case 'NODE_SQLITE': {
 			//@ts-ignore Might throw errors on non-node env or old versions of node
 			const { drizzle } = await import('drizzle-orm/node-sqlite');
-			return drizzle(DATABASE_URL || 'risuainext.db');
+			realDb = drizzle(DATABASE_URL || 'risuainext.db', { schema });
+			return realDb;
 		}
 		case 'BETTER_SQLITE3': {
 			const { drizzle } = await import('drizzle-orm/better-sqlite3');
-			return drizzle(DATABASE_URL);
+			realDb = drizzle(DATABASE_URL, { schema });
+			return realDb;
 		}
 		case 'LIBSQL': {
 			const { drizzle } = await import('drizzle-orm/libsql');
-			return drizzle(DATABASE_URL);
+			realDb = drizzle(DATABASE_URL, { schema });
+			return realDb;
 		}
 		case 'BUN_SQL': {
 			//@ts-ignore Might throw errors on non-bun env or old versions of bun
@@ -45,7 +58,23 @@ export const getDb = async (cenv?: any | undefined | null): Promise<Dbtype> => {
 			//@ts-ignore Might throw errors on non-bun env or old versions of bun
 			const { Database } = await import('bun:sqlite');
 			const sqlite = new Database(DATABASE_URL || 'sqlite.db');
-			return drizzle({ client: sqlite });
+			realDb = drizzle({ client: sqlite, schema });
+			return realDb;
+		}
+		case 'NODE_POSTGRES': {
+			const { drizzle } = await import('drizzle-orm/node-postgres');
+			realDb = drizzle(DATABASE_URL, { schema });
+			return realDb;
+		}
+		case 'POSTGRES_JS': {
+			const { drizzle } = await import('drizzle-orm/postgres-js');
+			realDb = drizzle(DATABASE_URL, { schema });
+			return realDb;
+		}
+		case 'NEON': {
+			const { drizzle } = await import('drizzle-orm/neon-http');
+			realDb = drizzle(DATABASE_URL, { schema });
+			return realDb;
 		}
 		case 'CLOUDFLARE': {
 			if (cenv?.D1Database) {
@@ -92,5 +121,5 @@ export const getDb = async (cenv?: any | undefined | null): Promise<Dbtype> => {
 		}
 	}
 
-	throw new Error(`Unknown DATABASE_MODE ${DATABASE_MODE}`);
+	throw new Error(`Unknown DATABASE_MODE ${databaseMode}`);
 };

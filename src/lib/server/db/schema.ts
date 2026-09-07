@@ -1,17 +1,14 @@
-import { sql } from 'drizzle-orm';
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { id, text, int, boolean, json, timestamp, table, index } from './columns';
 
-export const accounts = sqliteTable('accounts', {
+export const accounts = table('accounts', {
 	//id used in everywhere
-	id: text('id')
-		.primaryKey()
-		.$defaultFn(() => crypto.randomUUID()),
+	id: id(),
 
 	//accountType
 	//0 - Testing Account / Misc
 	//1 - Linked with Sionyw
 	//2 - Local Hosted-Use
-	accountType: integer('accountType').notNull(),
+	accountType: int('accountType').notNull(),
 
 	//linkedId
 	//Store linked Sionyw DBID
@@ -22,25 +19,20 @@ export const accounts = sqliteTable('accounts', {
 	name: text('name')
 });
 
-export const chatSessions = sqliteTable(
+export const chatSessions = table(
 	'chatSessions',
 	{
 		//id used in everywhere
-		id: text('id')
-			.primaryKey()
-			.$defaultFn(() => crypto.randomUUID()),
+		id: id(),
 
 		//display title, shown in the session list. null until set (e.g. derived from the first message)
 		title: text('title'),
 
 		//id of enabled modules
-		enabledModules: text('enabledModules', { mode: 'json' })
-			.$type<string[]>()
-			.notNull()
-			.default([]),
+		enabledModules: json<string[]>('enabledModules').notNull().default([]),
 
 		//chat vars
-		chatVars: text('chatVars', { mode: 'json' }).$type<string[]>().notNull().default([]),
+		chatVars: json<string[]>('chatVars').notNull().default([]),
 
 		//owner user
 		owner: text('owner')
@@ -54,31 +46,26 @@ export const chatSessions = sqliteTable(
 		linkedPrompt: text('linkedPrompt').notNull(),
 
 		//last accessed
-		lastAccessedAt: text('lastAccessedAt')
+		lastAccessedAt: timestamp('lastAccessedAt')
 			.notNull()
-			.default(sql`(CURRENT_TIMESTAMP)`),
+			.$defaultFn(() => new Date()),
 
 		//creation time
-		createdAt: text('created_at')
+		createdAt: timestamp('created_at')
 			.notNull()
-			.default(sql`(CURRENT_TIMESTAMP)`),
+			.$defaultFn(() => new Date()),
 
 		//toggles data
-		toggles: text('toggles', { mode: 'json' })
-			.$type<Record<string, boolean>>()
-			.notNull()
-			.default({})
+		toggles: json<Record<string, boolean>>('toggles').notNull().default({})
 	},
 	(table) => [index('chatSessions_owner_idx').on(table.owner)]
 );
 
-export const messages = sqliteTable(
+export const messages = table(
 	'messages',
 	{
 		//id
-		id: text('id')
-			.primaryKey()
-			.$defaultFn(() => crypto.randomUUID()),
+		id: id(),
 
 		//session
 		chatSessionId: text('chatSessionId')
@@ -92,10 +79,10 @@ export const messages = sqliteTable(
 		message: text('message').notNull(),
 
 		//alternate generations for this turn (swipes), not including the currently active `message`
-		swipes: text('swipes', { mode: 'json' }).$type<string[]>().notNull().default([]),
+		swipes: json<string[]>('swipes').notNull().default([]),
 
 		//metadata
-		meta: text('meta', { mode: 'json' }).notNull(),
+		meta: json<unknown>('meta').notNull(),
 
 		//owner user with read/write permission
 		//thou we can check the chatSessions, its here to reduce unnecessary sql calls
@@ -104,12 +91,12 @@ export const messages = sqliteTable(
 			.references(() => accounts.id, { onDelete: 'cascade' }),
 
 		//creation time
-		createdAt: text('created_at')
+		createdAt: timestamp('created_at')
 			.notNull()
-			.default(sql`(CURRENT_TIMESTAMP)`),
+			.$defaultFn(() => new Date()),
 
 		//last edited time, null if never edited since creation
-		updatedAt: text('updatedAt'),
+		updatedAt: timestamp('updatedAt'),
 
 		//position in the session, fractional indexing
 		position: text('position').notNull()
@@ -120,13 +107,11 @@ export const messages = sqliteTable(
 	]
 );
 
-export const modules = sqliteTable(
+export const modules = table(
 	'modules',
 	{
 		//id
-		id: text('id')
-			.primaryKey()
-			.$defaultFn(() => crypto.randomUUID()),
+		id: id(),
 
 		//display name
 		name: text('name').notNull(),
@@ -142,13 +127,11 @@ export const modules = sqliteTable(
 	(table) => [index('modules_owner_idx').on(table.owner)]
 );
 
-export const regexscripts = sqliteTable(
+export const regexscripts = table(
 	'regexscripts',
 	{
 		//id
-		id: text('id')
-			.primaryKey()
-			.$defaultFn(() => crypto.randomUUID()),
+		id: id(),
 
 		//parent module's id
 		moduleId: text('moduleId')
@@ -156,7 +139,7 @@ export const regexscripts = sqliteTable(
 			.references(() => modules.id, { onDelete: 'cascade' }),
 
 		//whether this script is applied
-		enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+		enabled: boolean('enabled').notNull().default(true),
 
 		//order of application within the module, fractional indexing
 		position: text('position').notNull(),
@@ -165,7 +148,7 @@ export const regexscripts = sqliteTable(
 		//0 - user input
 		//1 - AI output
 		//2 - display only (does not affect stored content)
-		targetType: integer('targetType').notNull(),
+		targetType: int('targetType').notNull(),
 
 		//expression of the regex, except the flag
 		regexExpression: text('regexExpression').notNull(),
