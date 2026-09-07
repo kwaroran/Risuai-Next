@@ -1,7 +1,8 @@
+import { sql } from 'drizzle-orm';
 //Relative import (not the `$lib` alias) - schema.ts is also loaded directly by drizzle-kit,
 //which doesn't resolve SvelteKit's path aliases.
 import type { MessageContentBlock } from '../../message';
-import { id, text, int, boolean, json, timestamp, table, index, type AnyColumn } from './columns';
+import { id, text, int, boolean, json, timestamp, table, index, uniqueIndex } from './columns';
 
 export const accounts = table('accounts', {
 	//id used in everywhere
@@ -103,27 +104,22 @@ export const messages = table(
 		//id
 		id: id(),
 
-		//session
-		chatSessionId: text('chatSessionId')
-			.notNull()
-			.references(() => chatSessions.id, { onDelete: 'cascade' }),
-
 		//speaker, also known as senders module ID. null means the message was sent by the account owner (the human user), not a module
 		speakerId: text('speakerId').references(() => modules.id, { onDelete: 'set null' }),
 
-		//the currently active generation for this turn. Every generation (including the first, and
-		//every "swipe"/regenerate afterwards) is its own row in messageVariants - this just points
-		//at whichever one is currently shown. Null only for the brief window between creating the
-		//message row and creating its first variant; set once and required from then on
-		activeVariantId: text('activeVariantId').references((): AnyColumn => messageVariants.id, {
-			onDelete: 'set null'
-		}),
+		//no reference to "the active generation" here on purpose - see messageVariants.active.
+		//A pointer column here would mean creating a message costs an extra UPDATE after its first
+		//variant exists (insert message -> insert variant -> update this column back to it), and
+		//createMessage is the hottest write path in the whole schema. With the flag living on
+		//messageVariants instead, the first variant is just inserted with active=true - no
+		//follow-up write, and no circular reference between these two tables to type around either.
 
 		//metadata
 		meta: json<unknown>('meta').notNull(),
 
 		//owner user with read/write permission
-		//thou we can check the chatSessions, its here to reduce unnecessary sql calls
+		//though we can check via messageSessions -> chatSessions, that's two joins just to
+		//authorize a read/write - it's here to keep that a single-column check
 		owner: text('owner')
 			.notNull()
 			.references(() => accounts.id, { onDelete: 'cascade' }),
@@ -131,14 +127,53 @@ export const messages = table(
 		//creation time
 		createdAt: timestamp('created_at')
 			.notNull()
-			.$defaultFn(() => new Date()),
+			.$defaultFn(() => new Date())
 
-		//position in the session, fractional indexing
+		//no chatSessionId/position here - which session(s) a message belongs to, and where, is
+		//tracked in messageSessions instead, since a message can be shared by multiple sessions
+		//(see messageSessions below for why)
+	},
+	(table) => [index('messages_owner_idx').on(table.owner)]
+);
+
+export const messageSessions = table(
+	'messageSessions',
+	{
+		//id
+		id: id(),
+
+		//which message this is
+		messageId: text('messageId')
+			.notNull()
+			.references(() => messages.id, { onDelete: 'cascade' }),
+
+		//which session it appears in
+		chatSessionId: text('chatSessionId')
+			.notNull()
+			.references(() => chatSessions.id, { onDelete: 'cascade' }),
+
+		//this message's order within `chatSessionId`, fractional indexing. Ordering is a property
+		//of session membership, not of the message itself, since branching can put the same
+		//message into more than one session
 		position: text('position').notNull()
+
+		//Branching a session from an earlier point does NOT copy any messages or messageVariants -
+		//it copies (messageId, position) pairs into a new chatSessionId here (select the source
+		//rows up to the fork point, then bulk-insert them under the new session id - not a single
+		//`INSERT ... SELECT`, since `id()`'s default is generated client-side per row, not a SQL
+		//DEFAULT). This is what makes forking cheap: shared history is referenced, never
+		//duplicated, and only new messages created after the fork ever get new rows anywhere.
+		//Deliberately not modeled as messages.chatSessionId + messages.position (a single column
+		//each) the way a flat, non-branching design would: a message can then only ever belong to
+		//one session, so branching would have to either copy full message rows (unbounded storage
+		//growth - the same class of problem as the original RisuAI's swipe-array bloat, just at
+		//session-history scale) or walk parent pointers at read time (which doesn't index well and
+		//costs a query per hop). A junction table keeps `messages`/`messageVariants` write-once and
+		//lets "which messages are in this session, in what order" stay a single indexed query.
 	},
 	(table) => [
-		index('messages_chatSessionId_position_idx').on(table.chatSessionId, table.position),
-		index('messages_owner_idx').on(table.owner)
+		index('messageSessions_chatSessionId_position_idx').on(table.chatSessionId, table.position),
+		index('messageSessions_messageId_idx').on(table.messageId)
 	]
 );
 
@@ -160,6 +195,14 @@ export const messageVariants = table(
 		//since unbounded per-message swipe arrays were a real problem in the original RisuAI
 		content: json<MessageContentBlock[]>('content').notNull().default([]),
 
+		//whether this is the generation currently shown for its message. Exactly one variant per
+		//messageId should ever have active=true - enforced by
+		//messageVariants_messageId_active_unique_idx below, a unique index that only covers rows
+		//where active=true (so any number of *inactive* variants can share a messageId, just never
+		//two active ones). Swiping/regenerating flips this instead of updating a pointer column on
+		//`messages` - see the comment on messages above for why
+		active: boolean('active').notNull().default(false),
+
 		//which model generated this variant. Null for a human-authored variant (this message's
 		//speakerId is null). Recorded per-variant rather than trusting chatSessions.linkedModel,
 		//since swipes/regenerates can each use a different model - and since some
@@ -178,7 +221,15 @@ export const messageVariants = table(
 		//after the fact, same as the old single-message edit)
 		updatedAt: timestamp('updatedAt')
 	},
-	(table) => [index('messageVariants_messageId_idx').on(table.messageId, table.createdAt)]
+	(table) => [
+		index('messageVariants_messageId_idx').on(table.messageId, table.createdAt),
+		//`sql` template, not eq() - eq() parameterizes the value ("? "), which drizzle-kit writes
+		//literally into the migration's DDL text where a bound parameter can't be resolved. A raw
+		//literal is required here; interpolating the column still renders its identifier safely
+		uniqueIndex('messageVariants_messageId_active_unique_idx')
+			.on(table.messageId)
+			.where(sql`${table.active} = true`)
+	]
 );
 
 export const modules = table(

@@ -50,6 +50,7 @@
 	},
 	"dependencies": {
 		"@neondatabase/serverless": "^1.1.0",
+		"fractional-indexing": "^4.0.0",
 		"pg": "^8.23.0",
 		"postgres": "^3.4.9",
 		"zod": "^4.4.3"

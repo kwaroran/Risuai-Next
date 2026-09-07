@@ -15,15 +15,47 @@ branching in application code, callers just do `const db = await getDb(); db.sel
 - `src/lib/server/db/columns.ts` — dialect-agnostic column/table helpers (see below) that
   `schema.ts` is built from.
 - `src/lib/server/db/schema.ts` — the actual tables (`accounts`, `files`, `chatSessions`,
-  `messages`, `messageVariants`, `modules`, `regexscripts`). Written once, using the helpers from
-  `columns.ts` — never imports `drizzle-orm/pg-core` or `drizzle-orm/sqlite-core` directly.
+  `messages`, `messageSessions`, `messageVariants`, `modules`, `regexscripts`). Written once, using
+  the helpers from `columns.ts` — never imports `drizzle-orm/pg-core` or `drizzle-orm/sqlite-core`
+  directly.
 - `src/lib/message.ts` — `MessageContentBlock`, the shape stored in `messageVariants.content` (see
   below). Lives outside `server/` (isomorphic, no server-only imports) since the chat UI needs the
   same type to render messages.
 - `src/lib/server/db/index.ts` — `getDb(cenv?)`, which lazily connects using whichever driver
   `DATABASE_MODE` resolved to and caches the connection in module state (`realDb`). `cenv` is only
   used for `CLOUDFLARE` mode, to pass through the Cloudflare Workers `env` binding when available
-  (see below).
+  (see below). Exports `Db`, the type `getDb()` resolves to — see "Why `Db` is a borrowed type"
+  below.
+- `src/lib/server/db/queries/` — hand-written query functions (reads and writes both), one file
+  per domain (e.g. `queries/messages.ts`), mirroring the table groupings in `schema.ts`.
+  Deliberately not a single `queries.ts` — that grows unbounded as more query functions get added.
+  Functions here take `(...args, owner, options?: { ..., cenv? })` and call `getDb(cenv)`
+  themselves, same pattern as `getDb`. `queries/messages.ts` has the full read/write lifecycle for
+  the message tables: `getRecentMessages`, `createMessage`, `editMessageContent`,
+  `regenerateMessage`, `switchMessageVariant`, `forkChatSession` — each takes the caller's
+  `owner` and checks it against `messages.owner`/`chatSessions.owner` as part of its query (never
+  a separate round trip), and throws if the row doesn't exist or doesn't belong to that owner.
+- `src/lib/server/db/position.ts` — thin wrapper around the `fractional-indexing` npm package
+  (not hand-rolled: the base-N key generation is easy to get subtly wrong, e.g. running out of
+  precision under repeated inserts at the same spot). Every `position` column in `schema.ts`
+  (`messageSessions`, `regexscripts`) is one of these keys. `nextPosition(lastPosition)` covers
+  the common "append after everything" case; import `generateKeyBetween` directly for inserting
+  between two existing positions.
+
+### Why `Db` is a borrowed type
+
+`getDb()`'s real return type is a union of every driver's Database type (`Dbtype` in
+`index.ts`) — one member per `DATABASE_MODE` branch. That union is too wide for TypeScript to
+resolve chained builder calls against (`.select().from()...` becomes "not callable" - none of the
+drivers' overloaded signatures merge cleanly across that many members). So `getDb()` is typed to
+return `Db`, a single borrowed driver type (`BetterSQLite3Database<typeof schema>`, arbitrarily -
+same "pick one dialect's type as the canonical face" trick `columns.ts` uses for columns), with
+`as unknown as Db` casts at each real return point. The actual runtime object is still whatever
+driver `DATABASE_MODE` picked; only its compile-time type is narrowed. This is safe for the
+core query-builder surface every driver actually shares (`select`/`insert`/`update`/`delete`/
+`query`/`transaction`) - which is all `queries/` functions should use. If you ever need a
+driver-specific feature not on that shared surface, that's a sign it doesn't belong behind this
+dialect-agnostic layer.
 
 ## `DATABASE_MODE`
 
@@ -82,8 +114,9 @@ sqlite builder (this is what gives the exported helper its borrowed type), then 
 function branches on `isPg` and casts the pg branch to `ReturnType<typeof xBase>`.
 
 `columns.ts` also exports `AnyColumn`, a type-only escape hatch for circular `.references()`
-thunks — see `messages.activeVariantId` in `schema.ts` for the pattern (two tables whose columns
-reference each other's `id` would otherwise make both tables' inferred types collapse to `any`).
+thunks — used for `messages.activeVariantId` → `messageVariants` (`messageVariants.messageId`
+references back to `messages`), anywhere two tables' columns reference each other (or a table
+references itself), which would otherwise make the inferred types collapse to `any`.
 
 ## Schema (`schema.ts`)
 
@@ -97,10 +130,25 @@ reference each other's `id` would otherwise make both tables' inferred types col
   reference lives inside a JSON column.
 - `chatSessions` — owned by an `accounts` row (`onDelete: 'cascade'`). `enabledModules`/`chatVars`
   are JSON arrays, `toggles` is a JSON string→boolean map.
-- `messages` — one row per turn, belongs to a `chatSessions` row. Holds no content itself anymore
-  — `activeVariantId` points at whichever `messageVariants` row is currently shown. `position` is
-  a fractional-indexing string (not an integer ordinal) so messages can be reordered/inserted
-  without renumbering siblings — same pattern used by `regexscripts.position`.
+- `messages` — one row per turn. Holds no session reference and no content of its own —
+  `activeVariantId` points at whichever `messageVariants` row is currently shown; which
+  session(s) it appears in, and where, lives in `messageSessions` instead (see below).
+- `messageSessions` — junction table between `messages` and `chatSessions`: `(messageId,
+chatSessionId, position)`, one row per (message, session) pair. **This is what makes branching
+  possible without copying message content or walking a tree at read time**: a branch is a new
+  `chatSessions` row plus a single `INSERT ... SELECT` that copies the shared prefix's
+  `(messageId, position)` rows into the new session id — no `messages`/`messageVariants` row is
+  ever duplicated, and "get session X's messages in order" stays one indexed query
+  (`messageSessions_chatSessionId_position_idx`) instead of a per-branch content copy or a
+  parent-pointer walk. `position` is fractional-indexing and is deliberately a property of the
+  membership row, not of `messages` itself, since branching can put the same message into more
+  than one session (each with its own place in that session's order — in practice the same
+  relative order, since it's a shared prefix). This design replaced an earlier `messages.parentId`
+  self-reference / `chatSessions.currentLeafId` "message tree" approach: that made reads a walk
+  (no single indexed query, since a session's active path wasn't stored anywhere directly), and a
+  same-session-only, deep-copy-per-branch alternative was rejected outright for reintroducing the
+  original RisuAI's swipe-array-bloat problem at session-history scale instead of per-message
+  scale.
 - `messageVariants` — one row per generation of a message (the first generation and every
   "swipe"/regenerate afterwards each get their own row), belongs to a `messages` row
   (`onDelete: 'cascade'`). `content` is an ordered `MessageContentBlock[]` (`src/lib/message.ts`):
@@ -111,12 +159,12 @@ reference each other's `id` would otherwise make both tables' inferred types col
   model generated the variant (null for a human-authored one) — kept per-variant rather than
   trusted from `chatSessions.linkedModel`, since swipes can each use a different model and some
   `ThoughtBlock` fields (`ref`/`hash`) are only valid replayed back to the exact model that
-  produced them. **Swipes were deliberately
-  pulled out into their own table instead of an array column on `messages`**: unbounded
-  per-message swipe arrays were a real problem in the original RisuAI (users could accumulate
-  huge arrays on a single row) — see `messageVariants_messageId_idx`. `messages` and
-  `messageVariants` reference each other's `id` (`activeVariantId` / `messageId`); see the
-  `AnyColumn` note above for how that circular reference is typed.
+  produced them. **Swipes were deliberately pulled out into their own table instead of an array
+  column on `messages`**: unbounded per-message swipe arrays were a real problem in the original
+  RisuAI (users could accumulate huge arrays on a single row) — see
+  `messageVariants_messageId_idx`. `messages` and `messageVariants` reference each other's `id`
+  (`activeVariantId` / `messageId`); see the `AnyColumn` note above for how that circular
+  reference is typed.
 - `modules` — owned by an `accounts` row; `icon` stores an image id, not the image itself (could
   migrate to referencing `files` later, but isn't wired up as a foreign key today).
 - `regexscripts` — belongs to a `modules` row. `targetType` is a small numeric enum (see comments
@@ -146,19 +194,19 @@ consumers (evaluator/renderer) that need to understand them.
 
 ## Known gaps / next steps
 
-- No repository/query-helper layer on top of `getDb()` — callers use Drizzle's own
-  `.select()/.insert()/.update()/.delete()` and `db.query.*` directly. This was a deliberate
-  choice since Drizzle's query builder already reads almost identically across sqlite/pg; add one
-  only if real cross-dialect friction shows up in practice (e.g. `onConflictDoUpdate` syntax
-  differences).
 - `CLOUDFLARE` mode's D1 HTTP REST fallback (used when no `cenv.D1Database` binding is available)
   hasn't been exercised against a real Cloudflare account yet.
 - No migrations are checked into the repo yet (`drizzle/` is untracked/empty) — run
   `pnpm db:generate` before the first `db:push` once real tables are needed somewhere.
-- Creating a message is necessarily two steps (insert the `messages` row, then insert its first
-  `messageVariants` row and update `activeVariantId`) since the two tables reference each other.
-  `messages.activeVariantId` is nullable specifically for the brief window between those two
-  inserts — no code should treat a message with a null `activeVariantId` as a normal, finished
-  state outside of that window.
+- `createMessage`/`regenerateMessage`/`forkChatSession` in `queries/messages.ts` cover the
+  multi-step writes described in the schema comments (message + first variant + placement;
+  new variant + repoint; copy shared-prefix placements into a new session). `activeVariantId` is
+  nullable specifically for the brief window `createMessage` is in between its first two inserts —
+  no other code should treat a message with a null `activeVariantId` as a normal, finished state.
+- `forkChatSession` doesn't record _that_ a fork happened, only performs it — there's no
+  `chatSessions.forkedFromMessageId` (or similar) pointer yet, so "list the sibling branches
+  forked from this point" isn't queryable; forked sessions are indistinguishable from independent
+  ones that happen to share history. Add that column if branches need to be
+  discoverable/navigable as siblings, not just independently browsable sessions.
 - No file-upload/storage layer exists yet — the `files` table only models metadata; nothing writes
   to it or interprets `storageKey` yet.

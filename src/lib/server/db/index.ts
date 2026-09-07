@@ -28,11 +28,20 @@ type Dbtype =
 	| PostgresJsDatabase<typeof schema>
 	| NeonHttpDatabase<typeof schema>;
 
+//Public-facing type for `getDb()`'s result. A union this wide (see `Dbtype` above) makes chained
+//builder calls (`.select().from()...`) uncallable - TS can't merge that many drivers' overloads.
+//So callers get one borrowed type instead (same trick as columns.ts's dialect-agnostic columns):
+//`getDb()` still connects with whichever real driver `DATABASE_MODE` picked, only its
+//compile-time type is narrowed to this one. The core query-builder surface
+//(select/insert/update/delete/query/transaction) is what every driver actually shares, so this is
+//safe to write queries against regardless of which dialect is active.
+export type Db = BetterSQLite3Database<typeof schema>;
+
 let realDb: Dbtype;
 
-export const getDb = async (cenv?: any | undefined | null): Promise<Dbtype> => {
+export const getDb = async (cenv?: any | undefined | null): Promise<Db> => {
 	if (realDb) {
-		return realDb;
+		return realDb as unknown as Db;
 	}
 
 	switch (databaseMode) {
@@ -40,17 +49,17 @@ export const getDb = async (cenv?: any | undefined | null): Promise<Dbtype> => {
 			//@ts-ignore Might throw errors on non-node env or old versions of node
 			const { drizzle } = await import('drizzle-orm/node-sqlite');
 			realDb = drizzle(DATABASE_URL || 'risuainext.db', { schema });
-			return realDb;
+			return realDb as unknown as Db;
 		}
 		case 'BETTER_SQLITE3': {
 			const { drizzle } = await import('drizzle-orm/better-sqlite3');
 			realDb = drizzle(DATABASE_URL, { schema });
-			return realDb;
+			return realDb as unknown as Db;
 		}
 		case 'LIBSQL': {
 			const { drizzle } = await import('drizzle-orm/libsql');
 			realDb = drizzle(DATABASE_URL, { schema });
-			return realDb;
+			return realDb as unknown as Db;
 		}
 		case 'BUN_SQL': {
 			//@ts-ignore Might throw errors on non-bun env or old versions of bun
@@ -59,22 +68,22 @@ export const getDb = async (cenv?: any | undefined | null): Promise<Dbtype> => {
 			const { Database } = await import('bun:sqlite');
 			const sqlite = new Database(DATABASE_URL || 'sqlite.db');
 			realDb = drizzle({ client: sqlite, schema });
-			return realDb;
+			return realDb as unknown as Db;
 		}
 		case 'NODE_POSTGRES': {
 			const { drizzle } = await import('drizzle-orm/node-postgres');
 			realDb = drizzle(DATABASE_URL, { schema });
-			return realDb;
+			return realDb as unknown as Db;
 		}
 		case 'POSTGRES_JS': {
 			const { drizzle } = await import('drizzle-orm/postgres-js');
 			realDb = drizzle(DATABASE_URL, { schema });
-			return realDb;
+			return realDb as unknown as Db;
 		}
 		case 'NEON': {
 			const { drizzle } = await import('drizzle-orm/neon-http');
 			realDb = drizzle(DATABASE_URL, { schema });
-			return realDb;
+			return realDb as unknown as Db;
 		}
 		case 'CLOUDFLARE': {
 			if (cenv?.D1Database) {
@@ -117,7 +126,7 @@ export const getDb = async (cenv?: any | undefined | null): Promise<Dbtype> => {
 				);
 			}
 
-			return realDb;
+			return realDb as unknown as Db;
 		}
 	}
 
