@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const accounts = sqliteTable('accounts', {
 	//id used in everywhere
@@ -22,88 +22,159 @@ export const accounts = sqliteTable('accounts', {
 	name: text('name')
 });
 
-export const chatSessions = sqliteTable('chatSessions', {
-	//id used in everywhere
-	id: text('id')
-		.primaryKey()
-		.$defaultFn(() => crypto.randomUUID()),
+export const chatSessions = sqliteTable(
+	'chatSessions',
+	{
+		//id used in everywhere
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
 
-	//id of enabled modules
-	enabledModules: text('enabledModules', { mode: 'json' }).$type<string[]>().notNull().default([]),
+		//display title, shown in the session list. null until set (e.g. derived from the first message)
+		title: text('title'),
 
-	//chat vars
-	chatVars: text('chatVars', { mode: 'json' }).$type<string[]>().notNull().default([]),
+		//id of enabled modules
+		enabledModules: text('enabledModules', { mode: 'json' })
+			.$type<string[]>()
+			.notNull()
+			.default([]),
 
-	//owner user
-	owner: text('owner').notNull(),
+		//chat vars
+		chatVars: text('chatVars', { mode: 'json' }).$type<string[]>().notNull().default([]),
 
-	//linked model
-	linkedModel: text('linkedModel').notNull(),
+		//owner user
+		owner: text('owner')
+			.notNull()
+			.references(() => accounts.id, { onDelete: 'cascade' }),
 
-	//linked prompt
-	linkedPrompt: text('linkedPrompt').notNull(),
+		//linked model
+		linkedModel: text('linkedModel').notNull(),
 
-	//last accessed
-	lastAccessedAt: text('created_at').notNull(),
-	
-	//creation time
-	createdAt: text('created_at').notNull().default(sql`(CURRENT_TIMESTAMP)`),
+		//linked prompt
+		linkedPrompt: text('linkedPrompt').notNull(),
 
-	//toggles data
-	toggles: text('toggles', {mode: 'json'}).notNull()
-});
+		//last accessed
+		lastAccessedAt: text('lastAccessedAt')
+			.notNull()
+			.default(sql`(CURRENT_TIMESTAMP)`),
 
-export const messages = sqliteTable('messages', {
-	//id
-	id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+		//creation time
+		createdAt: text('created_at')
+			.notNull()
+			.default(sql`(CURRENT_TIMESTAMP)`),
 
-	//session
-	chatSessionId: text('chatSessionId').notNull(),
+		//toggles data
+		toggles: text('toggles', { mode: 'json' })
+			.$type<Record<string, boolean>>()
+			.notNull()
+			.default({})
+	},
+	(table) => [index('chatSessions_owner_idx').on(table.owner)]
+);
 
-	//speaker, also known as senders module ID
-	speakerId: text('speakerId').notNull(),
+export const messages = sqliteTable(
+	'messages',
+	{
+		//id
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
 
-	//message content
-	message: text('message').notNull(),
+		//session
+		chatSessionId: text('chatSessionId')
+			.notNull()
+			.references(() => chatSessions.id, { onDelete: 'cascade' }),
 
-	//metadata
-	meta: text('meta', {mode: 'json'}).notNull(),
+		//speaker, also known as senders module ID. null means the message was sent by the account owner (the human user), not a module
+		speakerId: text('speakerId').references(() => modules.id, { onDelete: 'set null' }),
 
-	//owner user with read/write permission
-	//thou we can check the chatSessions, its here to reduce unnecessary sql calls
-	owner: text('owner').notNull(),
+		//active message content
+		message: text('message').notNull(),
 
-	//creation time
-	createdAt: text('created_at').notNull().default(sql`(CURRENT_TIMESTAMP)`),
+		//alternate generations for this turn (swipes), not including the currently active `message`
+		swipes: text('swipes', { mode: 'json' }).$type<string[]>().notNull().default([]),
 
-	//position in the session, fractional indexing
-	position: text('position').notNull()
-})
+		//metadata
+		meta: text('meta', { mode: 'json' }).notNull(),
 
-export const modules = sqliteTable('modules', {
-	//id
-	id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+		//owner user with read/write permission
+		//thou we can check the chatSessions, its here to reduce unnecessary sql calls
+		owner: text('owner')
+			.notNull()
+			.references(() => accounts.id, { onDelete: 'cascade' }),
 
-	//icon, image id is stored
-	icon: text('icon').notNull(),
+		//creation time
+		createdAt: text('created_at')
+			.notNull()
+			.default(sql`(CURRENT_TIMESTAMP)`),
 
-	//owner user
-	owner: text('owner').notNull(),
-})
+		//last edited time, null if never edited since creation
+		updatedAt: text('updatedAt'),
 
-export const regexscripts = sqliteTable('regexscripts', {
-	//id
-	id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+		//position in the session, fractional indexing
+		position: text('position').notNull()
+	},
+	(table) => [
+		index('messages_chatSessionId_position_idx').on(table.chatSessionId, table.position),
+		index('messages_owner_idx').on(table.owner)
+	]
+);
 
-	//parent module's id
-	moduleId: text('moduleId').notNull(),
+export const modules = sqliteTable(
+	'modules',
+	{
+		//id
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
 
-	//expression of the regex, except the flag
-	regexExpression: text('regexExpression').notNull(),
+		//display name
+		name: text('name').notNull(),
 
-	//flag of the regex
-	regexFlag: text('regexFlag').notNull(),
+		//icon, image id is stored
+		icon: text('icon').notNull(),
 
-	//replacer
-	content: text('content').notNull()
-})
+		//owner user
+		owner: text('owner')
+			.notNull()
+			.references(() => accounts.id, { onDelete: 'cascade' })
+	},
+	(table) => [index('modules_owner_idx').on(table.owner)]
+);
+
+export const regexscripts = sqliteTable(
+	'regexscripts',
+	{
+		//id
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
+
+		//parent module's id
+		moduleId: text('moduleId')
+			.notNull()
+			.references(() => modules.id, { onDelete: 'cascade' }),
+
+		//whether this script is applied
+		enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+
+		//order of application within the module, fractional indexing
+		position: text('position').notNull(),
+
+		//targetType
+		//0 - user input
+		//1 - AI output
+		//2 - display only (does not affect stored content)
+		targetType: integer('targetType').notNull(),
+
+		//expression of the regex, except the flag
+		regexExpression: text('regexExpression').notNull(),
+
+		//flag of the regex
+		regexFlag: text('regexFlag').notNull(),
+
+		//replacer
+		content: text('content').notNull()
+	},
+	(table) => [index('regexscripts_moduleId_position_idx').on(table.moduleId, table.position)]
+);
