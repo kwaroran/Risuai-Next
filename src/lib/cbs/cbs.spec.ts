@@ -37,7 +37,7 @@ describe('parseCbs', () => {
 		});
 	});
 
-	it('parses nested tags inside a block body and inside another tag\'s args', () => {
+	it("parses nested tags inside a block body and inside another tag's args", () => {
 		const [node] = parseCbs('{{#the}} data {{nesting::{{must}}::also}}{{/work}}');
 		if (node.type !== 'block') throw new Error('expected a block node');
 
@@ -106,7 +106,7 @@ describe('parseCbs', () => {
 		expect(parseCbs('{{user}}')).toMatchObject([{ type: 'tag', name: 'user', args: [] }]);
 	});
 
-	it('recognizes a legacy tag nested inside another tag\'s args', () => {
+	it("recognizes a legacy tag nested inside another tag's args", () => {
 		const [node] = parseCbs('{{this::nested::<user>::should::work}}');
 		expect(node).toMatchObject({
 			type: 'tag',
@@ -149,7 +149,7 @@ describe('evaluateCbs', () => {
 		expect(evaluateCbs('value is {{test}}!')).toBe('value is 0!');
 	});
 
-	it('resolves <user> the same way {{user}} would, even nested inside another tag\'s args', () => {
+	it("resolves <user> the same way {{user}} would, even nested inside another tag's args", () => {
 		const ctx = createDefaultCbsContext();
 		ctx.functions.set('user', () => 'Alice');
 		ctx.functions.set('this', (args) => args.join('|'));

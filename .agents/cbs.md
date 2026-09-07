@@ -1,7 +1,7 @@
 # CBS parser (`src/lib/cbs/`)
 
 A from-scratch parser/evaluator for CBS (`{{these}}`), the macro syntax
-the original Risuai. This module only implements the *engine* — parsing, brace-nesting, arg
+the original Risuai. This module only implements the _engine_ — parsing, brace-nesting, arg
 splitting, block structure — plus a minimal evaluator. Almost no actual macros are implemented
 yet; see [What's implemented](#whats-implemented) below.
 
@@ -75,7 +75,7 @@ output.
   for them by default (see [What's implemented](#whats-implemented)).
 - `{{#if}}` only does a string-equality truthy check (`"1"` / `"true"`) on the whole condition, no
   more. `#when` and any other block are still fully unimplemented — the parser understands their
-  *syntax* but nothing executes them.
+  _syntax_ but nothing executes them.
 - `LEGACY_SPACE_ARG_BLOCKS` currently only contains `if`. If other legacy space-syntax blocks are
   found, add them there instead of duplicating the special-case logic.
 - `LEGACY_TAGS` currently only contains `bot`/`user`/`char`. Same pattern applies for any other
