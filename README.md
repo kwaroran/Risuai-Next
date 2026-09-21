@@ -23,3 +23,7 @@ Nothing. Risuai will continue as is. Risuai-Next will be a separate app that run
 ## Why are PRs and issues closed?
 
 I want to focus on the program myself in the early stages. It will be opened when it's ready.
+
+## Development Goal
+
+I only contribute to this project occasionally, in my spare time, after prioritizing my main job and other projects like Risuai. Consequently, there are no development deadlines, and progress may be very slow.
