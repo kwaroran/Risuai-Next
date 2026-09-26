@@ -130,7 +130,11 @@ needs it.
   reference lives inside a JSON column.
 - `chatSessions` — owned by an `accounts` row (`onDelete: 'cascade'`). `enabledModules`/`chatVars`
   are JSON arrays, `toggles` is a JSON string→boolean map.
-- `messages` — one row per turn. `variants` is a JSON `MessageVariant[]` (`src/lib/message.ts`)
+- `messages` — one row per turn. `role` is a small numeric enum (`MessageRole` in
+  `src/lib/message.ts`: 0 user, 1 assistant, 2 system) and is independent of `speakerId` (which
+  module spoke; null = the account owner or a since-deleted module). Never derive role from
+  `speakerId` — `onDelete: 'set null'` would turn a deleted module's messages into user
+  messages, and a module can author a user-role message. `variants` is a JSON `MessageVariant[]` (`src/lib/message.ts`)
   holding every generation of the message — the first generation and every "swipe"/regenerate
   afterwards each append one entry — and `activeVariant` is the index of the one currently shown.
   Append-only, so array order is also generation order. Each variant has its own `content`
@@ -168,7 +172,10 @@ chatSessionId, position)`, one row per (message, session) pair. **This is what m
 Discriminated union on `type`, stored as the JSON array `MessageVariant.content`
 (inside `messages.variants`):
 
-- `text` — `{ type: 'text'; text }`.
+- `text` — `{ type: 'text'; text; citations? }`. `citations` (`{ url?; fileId?; title?; quote?;
+start?; end? }[]`) are the sources a provider attributed the text to — kept on the text rather
+  than as a separate block since each one belongs to a span (`start`/`end` are UTF-16 offsets
+  into `text`; omitted = whole block).
 - `thought` — `{ type: 'thought'; text?; summary?; ref?; hash?; redacted? }`. Providers don't agree
   on what they expose for reasoning: `text` (full chain of thought), `summary` (condensed - some
   providers, e.g. OpenAI's reasoning models, only ever give this), `ref` (opaque id to reference
@@ -176,15 +183,36 @@ Discriminated union on `type`, stored as the JSON array `MessageVariant.content`
   byte-for-byte to prove the block wasn't tampered with, e.g. Anthropic's thinking signature) are
   all optional and independent. `redacted` is true when the reasoning content itself was withheld
   (e.g. Anthropic's redacted thinking blocks).
-- `toolCall` — `{ type: 'toolCall'; id; name; args }`. `id` is matched against a later
-  `toolResult.toolCallId` — possibly on a different message, since a call and its result can land
-  on separate turns.
-- `toolResult` — `{ type: 'toolResult'; toolCallId; result; isError? }`.
+- `toolCall` — `{ type: 'toolCall'; id; name; args; executor?; providerData? }`. `id` is matched
+  against a later `toolResult.toolCallId` — possibly on a different message, since a call and its
+  result can land on separate turns. `executor` is `'client'` (this app ran it; the default) or
+  `'provider'` (the model provider's own built-in tool, e.g. web search / code execution).
+  Provider tools are stored as ordinary tool calls rather than opaque provider blocks so that
+  they survive a model switch: `name` uses a `CanonicalToolName` (`web_search`, `web_fetch`,
+  `code_execution`) where possible, and `providerData` holds the original payload for exact
+  replay to the same provider only (same scoping caveat as `ThoughtBlock.ref`/`hash`). Replaying
+  a provider-executed call to a different model: rebuild it from `name`/`args`/`result` if that
+  provider has the same built-in tool, otherwise flatten call + result into text — most APIs
+  reject tool calls for tools not declared in the request.
+- `toolResult` — `{ type: 'toolResult'; toolCallId; result; data?; isError?; providerData? }`.
+  `result` is what the model sees: a string, or `(TextBlock | FileBlock)[]` when the output
+  includes media. `data` is the structured form, for the UI and for rebuilding the call on a
+  model switch — the normalized `WebSearchResult` / `WebFetchResult` / `CodeExecutionResult`
+  shape for canonical tools, otherwise tool-defined; never sent to the model directly.
 - `file` — `{ type: 'file'; fileId; name?; mimeType? }`. `fileId` references `files.id`.
+- `error` — `{ type: 'error'; message; code? }`. Marks a generation that failed partway, so the
+  UI can keep what arrived before the failure. UI-only.
+- `comment` — `{ type: 'comment'; text }`. A note shown in the chat UI but never sent to a
+  model. UI-only.
 
-**Adding a block type**: add the interface and union member in `message.ts`. No schema migration
-needed — `content` is a single JSON column, so new block shapes don't require a DB change, only
-consumers (evaluator/renderer) that need to understand them.
+UI-only blocks (`UiOnlyBlock`) must be dropped by the prompt builder — filter with
+`isPromptBlock()` rather than checking types by hand. Images/audio (generated or uploaded) are
+`file` blocks with a `mimeType`, not a separate block type.
+
+**Adding a block type**: add the interface and union member in `message.ts` (and to
+`UiOnlyBlock` and `isPromptBlock` if it must never reach a model). No schema migration needed —
+`content` is a single JSON column, so new block shapes don't require a DB change, only consumers
+(evaluator/renderer) that need to understand them.
 
 ## Known gaps / next steps
 

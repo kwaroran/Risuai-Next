@@ -1,6 +1,6 @@
 //Relative import (not the `$lib` alias) - schema.ts is also loaded directly by drizzle-kit,
 //which doesn't resolve SvelteKit's path aliases.
-import type { MessageVariant } from '../../message';
+import type { MessageRole, MessageVariant } from '../../message';
 import { id, text, int, boolean, json, timestamp, table, index } from './columns';
 
 export const accounts = table('accounts', {
@@ -103,7 +103,15 @@ export const messages = table(
 		//id
 		id: id(),
 
-		//speaker, also known as senders module ID. null means the message was sent by the account owner (the human user), not a module
+		//role, see MessageRole in src/lib/message.ts
+		//0 - user
+		//1 - assistant
+		//2 - system
+		//Who spoke is speakerId below, not this - the two are independent
+		role: int('role').$type<MessageRole>().notNull(),
+
+		//speaker, also known as senders module ID. null means the account owner (the human user),
+		//or a module that has since been deleted - don't derive the role from this, use `role`
 		speakerId: text('speakerId').references(() => modules.id, { onDelete: 'set null' }),
 
 		//every generation of this message - the first generation and every "swipe"/regenerate

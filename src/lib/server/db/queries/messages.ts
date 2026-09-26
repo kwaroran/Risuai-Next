@@ -1,5 +1,5 @@
 import { and, desc, eq, lt, lte } from 'drizzle-orm';
-import type { MessageContentBlock, MessageVariant } from '../../../message';
+import type { MessageContentBlock, MessageRole, MessageVariant } from '../../../message';
 import { getDb, type Db } from '../index';
 import { chatSessions, messageSessions, messages } from '../schema';
 import { nextPosition } from '../position';
@@ -63,6 +63,7 @@ export async function createMessage(
 	chatSessionId: string,
 	owner: string,
 	params: {
+		role: MessageRole;
 		speakerId?: string | null;
 		content: MessageContentBlock[];
 		model?: string | null;
@@ -93,6 +94,7 @@ export async function createMessage(
 	const [message] = await db
 		.insert(messages)
 		.values({
+			role: params.role,
 			speakerId: params.speakerId ?? null,
 			variants: [variant],
 			activeVariant: 0,
