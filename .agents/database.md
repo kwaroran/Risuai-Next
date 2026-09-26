@@ -131,7 +131,8 @@ needs it.
 - `chatSessions` — owned by an `accounts` row (`onDelete: 'cascade'`). `enabledModules`/`chatVars`
   are JSON arrays, `toggles` is a JSON string→boolean map.
 - `messages` — one row per turn. `role` is a small numeric enum (`MessageRole` in
-  `src/lib/message.ts`: 0 user, 1 assistant, 2 system) and is independent of `speakerId` (which
+  `src/lib/message.ts`: 0 none, 1 user, 2 assistant, 3 system —
+  `None` is for role-less input some models/providers accept) and is independent of `speakerId` (which
   module spoke; null = the account owner or a since-deleted module). Never derive role from
   `speakerId` — `onDelete: 'set null'` would turn a deleted module's messages into user
   messages, and a module can author a user-role message. `variants` is a JSON `MessageVariant[]` (`src/lib/message.ts`)

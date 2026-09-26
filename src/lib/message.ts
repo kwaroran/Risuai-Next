@@ -3,10 +3,14 @@
 //columns differ across SQLite/Postgres. Deliberately separate from `messages.speakerId` (*who*
 //spoke): a module can author a user-role message (e.g. "write my reply for me"), and a deleted
 //module's messages must stay assistant messages even after their speakerId is nulled.
+//None is for content sent without any role marker - e.g. raw text for completion-style models, or
+//providers that accept role-less input. Adapters for providers that require a role decide how to
+//map it; it isn't silently treated as any particular role here.
 export const MessageRole = {
-	User: 0,
-	Assistant: 1,
-	System: 2
+	None: 0,
+	User: 1,
+	Assistant: 2,
+	System: 3
 } as const;
 export type MessageRole = (typeof MessageRole)[keyof typeof MessageRole];
 

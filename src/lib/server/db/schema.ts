@@ -104,9 +104,10 @@ export const messages = table(
 		id: id(),
 
 		//role, see MessageRole in src/lib/message.ts
-		//0 - user
-		//1 - assistant
-		//2 - system
+		//0 - no role (role-less input, e.g. completion-style models)
+		//1 - user
+		//2 - assistant
+		//3 - system
 		//Who spoke is speakerId below, not this - the two are independent
 		role: int('role').$type<MessageRole>().notNull(),
 
