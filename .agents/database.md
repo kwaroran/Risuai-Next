@@ -15,11 +15,11 @@ branching in application code, callers just do `const db = await getDb(); db.sel
 - `src/lib/server/db/columns.ts` — dialect-agnostic column/table helpers (see below) that
   `schema.ts` is built from.
 - `src/lib/server/db/schema.ts` — the actual tables (`accounts`, `files`, `chatSessions`,
-  `messages`, `messageSessions`, `messageVariants`, `modules`, `regexscripts`). Written once, using
+  `messages`, `messageSessions`, `modules`, `regexscripts`). Written once, using
   the helpers from `columns.ts` — never imports `drizzle-orm/pg-core` or `drizzle-orm/sqlite-core`
   directly.
-- `src/lib/message.ts` — `MessageContentBlock`, the shape stored in `messageVariants.content` (see
-  below). Lives outside `server/` (isomorphic, no server-only imports) since the chat UI needs the
+- `src/lib/message.ts` — `MessageVariant` / `MessageContentBlock`, the shapes stored in
+  `messages.variants` (see below). Lives outside `server/` (isomorphic, no server-only imports) since the chat UI needs the
   same type to render messages.
 - `src/lib/server/db/index.ts` — `getDb(cenv?)`, which lazily connects using whichever driver
   `DATABASE_MODE` resolved to and caches the connection in module state (`realDb`). `cenv` is only
@@ -114,9 +114,9 @@ sqlite builder (this is what gives the exported helper its borrowed type), then 
 function branches on `isPg` and casts the pg branch to `ReturnType<typeof xBase>`.
 
 `columns.ts` also exports `AnyColumn`, a type-only escape hatch for circular `.references()`
-thunks — used for `messages.activeVariantId` → `messageVariants` (`messageVariants.messageId`
-references back to `messages`), anywhere two tables' columns reference each other (or a table
-references itself), which would otherwise make the inferred types collapse to `any`.
+thunks — for anywhere two tables' columns reference each other (or a table references itself),
+which would otherwise make the inferred types collapse to `any`. Nothing in the current schema
+needs it.
 
 ## Schema (`schema.ts`)
 
@@ -130,14 +130,23 @@ references itself), which would otherwise make the inferred types collapse to `a
   reference lives inside a JSON column.
 - `chatSessions` — owned by an `accounts` row (`onDelete: 'cascade'`). `enabledModules`/`chatVars`
   are JSON arrays, `toggles` is a JSON string→boolean map.
-- `messages` — one row per turn. Holds no session reference and no content of its own —
-  `activeVariantId` points at whichever `messageVariants` row is currently shown; which
-  session(s) it appears in, and where, lives in `messageSessions` instead (see below).
+- `messages` — one row per turn. `variants` is a JSON `MessageVariant[]` (`src/lib/message.ts`)
+  holding every generation of the message — the first generation and every "swipe"/regenerate
+  afterwards each append one entry — and `activeVariant` is the index of the one currently shown.
+  Append-only, so array order is also generation order. Each variant has its own `content`
+  (ordered `MessageContentBlock[]`), `model` (null for human-authored; kept per-variant rather
+  than trusted from `chatSessions.linkedModel`, since swipes can each use a different model and
+  some `ThoughtBlock` fields are only valid replayed to the exact model that produced them), and
+  `createdAt`/`updatedAt` as epoch milliseconds (JSON can't hold a `Date`). Writes to `variants`
+  are read-modify-write of the whole array: patching one element in place needs dialect-specific
+  JSON functions (`json_set` vs `jsonb_set`) that don't belong behind the borrowed `Db` type.
+  Holds no session reference — which session(s) it appears in, and where, lives in
+  `messageSessions` instead (see below).
 - `messageSessions` — junction table between `messages` and `chatSessions`: `(messageId,
 chatSessionId, position)`, one row per (message, session) pair. **This is what makes branching
   possible without copying message content or walking a tree at read time**: a branch is a new
   `chatSessions` row plus a single `INSERT ... SELECT` that copies the shared prefix's
-  `(messageId, position)` rows into the new session id — no `messages`/`messageVariants` row is
+  `(messageId, position)` rows into the new session id — no `messages` row is
   ever duplicated, and "get session X's messages in order" stays one indexed query
   (`messageSessions_chatSessionId_position_idx`) instead of a per-branch content copy or a
   parent-pointer walk. `position` is fractional-indexing and is deliberately a property of the
@@ -149,22 +158,6 @@ chatSessionId, position)`, one row per (message, session) pair. **This is what m
   same-session-only, deep-copy-per-branch alternative was rejected outright for reintroducing the
   original RisuAI's swipe-array-bloat problem at session-history scale instead of per-message
   scale.
-- `messageVariants` — one row per generation of a message (the first generation and every
-  "swipe"/regenerate afterwards each get their own row), belongs to a `messages` row
-  (`onDelete: 'cascade'`). `content` is an ordered `MessageContentBlock[]` (`src/lib/message.ts`):
-  plain text, model reasoning (`thought`), agentic `toolCall`/`toolResult` pairs, and `file`
-  blocks all interleave freely in that one array, since a single turn can mix all of them (e.g.
-  thought → toolCall → toolResult → text). Ordered by `createdAt` — variants are only ever
-  appended, never reordered, so no separate `position` field is needed. `model` records which
-  model generated the variant (null for a human-authored one) — kept per-variant rather than
-  trusted from `chatSessions.linkedModel`, since swipes can each use a different model and some
-  `ThoughtBlock` fields (`ref`/`hash`) are only valid replayed back to the exact model that
-  produced them. **Swipes were deliberately pulled out into their own table instead of an array
-  column on `messages`**: unbounded per-message swipe arrays were a real problem in the original
-  RisuAI (users could accumulate huge arrays on a single row) — see
-  `messageVariants_messageId_idx`. `messages` and `messageVariants` reference each other's `id`
-  (`activeVariantId` / `messageId`); see the `AnyColumn` note above for how that circular
-  reference is typed.
 - `modules` — owned by an `accounts` row; `icon` stores an image id, not the image itself (could
   migrate to referencing `files` later, but isn't wired up as a foreign key today).
 - `regexscripts` — belongs to a `modules` row. `targetType` is a small numeric enum (see comments
@@ -172,7 +165,8 @@ chatSessionId, position)`, one row per (message, session) pair. **This is what m
 
 ## `MessageContentBlock` (`src/lib/message.ts`)
 
-Discriminated union on `type`, stored as the JSON array `messageVariants.content`:
+Discriminated union on `type`, stored as the JSON array `MessageVariant.content`
+(inside `messages.variants`):
 
 - `text` — `{ type: 'text'; text }`.
 - `thought` — `{ type: 'thought'; text?; summary?; ref?; hash?; redacted? }`. Providers don't agree
@@ -199,10 +193,14 @@ consumers (evaluator/renderer) that need to understand them.
 - No migrations are checked into the repo yet (`drizzle/` is untracked/empty) — run
   `pnpm db:generate` before the first `db:push` once real tables are needed somewhere.
 - `createMessage`/`regenerateMessage`/`forkChatSession` in `queries/messages.ts` cover the
-  multi-step writes described in the schema comments (message + first variant + placement;
-  new variant + repoint; copy shared-prefix placements into a new session). `activeVariantId` is
-  nullable specifically for the brief window `createMessage` is in between its first two inserts —
-  no other code should treat a message with a null `activeVariantId` as a normal, finished state.
+  multi-step writes described in the schema comments (message with first variant + placement;
+  append variant + repoint `activeVariant`; copy shared-prefix placements into a new session).
+- Swipe count per message is unbounded — every regenerate grows `messages.variants`, and every
+  variant write rewrites the whole array. The original RisuAI hit exactly this (huge per-message
+  swipe arrays); if it shows up here, add an app-enforced cap in `regenerateMessage` (drop oldest,
+  adjusting `activeVariant`).
+- Variant edits are read-modify-write without a transaction, so two concurrent writes to the same
+  message (e.g. edit + regenerate) can lose one of them.
 - `forkChatSession` doesn't record _that_ a fork happened, only performs it — there's no
   `chatSessions.forkedFromMessageId` (or similar) pointer yet, so "list the sibling branches
   forked from this point" isn't queryable; forked sessions are indistinguishable from independent

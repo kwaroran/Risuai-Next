@@ -1,8 +1,7 @@
-import { sql } from 'drizzle-orm';
 //Relative import (not the `$lib` alias) - schema.ts is also loaded directly by drizzle-kit,
 //which doesn't resolve SvelteKit's path aliases.
-import type { MessageContentBlock } from '../../message';
-import { id, text, int, boolean, json, timestamp, table, index, uniqueIndex } from './columns';
+import type { MessageVariant } from '../../message';
+import { id, text, int, boolean, json, timestamp, table, index } from './columns';
 
 export const accounts = table('accounts', {
 	//id used in everywhere
@@ -107,12 +106,13 @@ export const messages = table(
 		//speaker, also known as senders module ID. null means the message was sent by the account owner (the human user), not a module
 		speakerId: text('speakerId').references(() => modules.id, { onDelete: 'set null' }),
 
-		//no reference to "the active generation" here on purpose - see messageVariants.active.
-		//A pointer column here would mean creating a message costs an extra UPDATE after its first
-		//variant exists (insert message -> insert variant -> update this column back to it), and
-		//createMessage is the hottest write path in the whole schema. With the flag living on
-		//messageVariants instead, the first variant is just inserted with active=true - no
-		//follow-up write, and no circular reference between these two tables to type around either.
+		//every generation of this message - the first generation and every "swipe"/regenerate
+		//afterwards each append one entry. See MessageVariant in src/lib/message.ts. Append-only,
+		//never reordered, so array order is also "which swipe came after which"
+		variants: json<MessageVariant[]>('variants').notNull().default([]),
+
+		//index into `variants` of the generation currently shown
+		activeVariant: int('activeVariant').notNull().default(0),
 
 		//metadata
 		meta: json<unknown>('meta').notNull(),
@@ -157,7 +157,7 @@ export const messageSessions = table(
 		//message into more than one session
 		position: text('position').notNull()
 
-		//Branching a session from an earlier point does NOT copy any messages or messageVariants -
+		//Branching a session from an earlier point does NOT copy any messages -
 		//it copies (messageId, position) pairs into a new chatSessionId here (select the source
 		//rows up to the fork point, then bulk-insert them under the new session id - not a single
 		//`INSERT ... SELECT`, since `id()`'s default is generated client-side per row, not a SQL
@@ -168,67 +168,12 @@ export const messageSessions = table(
 		//one session, so branching would have to either copy full message rows (unbounded storage
 		//growth - the same class of problem as the original RisuAI's swipe-array bloat, just at
 		//session-history scale) or walk parent pointers at read time (which doesn't index well and
-		//costs a query per hop). A junction table keeps `messages`/`messageVariants` write-once and
+		//costs a query per hop). A junction table keeps `messages` shared across branches and
 		//lets "which messages are in this session, in what order" stay a single indexed query.
 	},
 	(table) => [
 		index('messageSessions_chatSessionId_position_idx').on(table.chatSessionId, table.position),
 		index('messageSessions_messageId_idx').on(table.messageId)
-	]
-);
-
-export const messageVariants = table(
-	'messageVariants',
-	{
-		//id
-		id: id(),
-
-		//parent message (turn) this is a generation of
-		messageId: text('messageId')
-			.notNull()
-			.references(() => messages.id, { onDelete: 'cascade' }),
-
-		//ordered content blocks for this generation - plain text, model reasoning ("thoughts"),
-		//agentic tool calls/results, and embedded files all interleave in one array. See
-		//MessageContentBlock in src/lib/message.ts. Deliberately NOT stored on `messages` itself:
-		//every swipe/regenerate creates a new row here instead of growing an array on the message,
-		//since unbounded per-message swipe arrays were a real problem in the original RisuAI
-		content: json<MessageContentBlock[]>('content').notNull().default([]),
-
-		//whether this is the generation currently shown for its message. Exactly one variant per
-		//messageId should ever have active=true - enforced by
-		//messageVariants_messageId_active_unique_idx below, a unique index that only covers rows
-		//where active=true (so any number of *inactive* variants can share a messageId, just never
-		//two active ones). Swiping/regenerating flips this instead of updating a pointer column on
-		//`messages` - see the comment on messages above for why
-		active: boolean('active').notNull().default(false),
-
-		//which model generated this variant. Null for a human-authored variant (this message's
-		//speakerId is null). Recorded per-variant rather than trusting chatSessions.linkedModel,
-		//since swipes/regenerates can each use a different model - and since some
-		//MessageContentBlock fields (ThoughtBlock's `ref`/`hash`) are only valid replayed back to
-		//the exact model/provider that produced them, so callers need to know that before reusing
-		//them in a later request
-		model: text('model'),
-
-		//creation time - also the natural ordering for "which swipe came after which", since
-		//variants are only ever appended, never reordered
-		createdAt: timestamp('created_at')
-			.notNull()
-			.$defaultFn(() => new Date()),
-
-		//last edited time, null if never edited since creation (a user can edit a swipe's content
-		//after the fact, same as the old single-message edit)
-		updatedAt: timestamp('updatedAt')
-	},
-	(table) => [
-		index('messageVariants_messageId_idx').on(table.messageId, table.createdAt),
-		//`sql` template, not eq() - eq() parameterizes the value ("? "), which drizzle-kit writes
-		//literally into the migration's DDL text where a bound parameter can't be resolved. A raw
-		//literal is required here; interpolating the column still renders its identifier safely
-		uniqueIndex('messageVariants_messageId_active_unique_idx')
-			.on(table.messageId)
-			.where(sql`${table.active} = true`)
 	]
 );
 
